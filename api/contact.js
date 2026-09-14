@@ -6,6 +6,7 @@
  * Sends two emails through an SMTP relay (Brevo by default), with no npm dependencies:
  *   1. the enquiry to MAIL_TO (info@flakelab.ca), with Reply-To set to the visitor
  *   2. a short confirmation from MAIL_FROM (no-reply@flakelab.ca) to the visitor
+ * Email designs live in api/_email/templates.js.
  *
  * Environment variables (set them in Vercel, never in this file):
  *   SMTP_USER        required  SMTP login shown in Brevo > SMTP & API > SMTP
@@ -19,6 +20,7 @@
 
 const tls = require('node:tls');
 const crypto = require('node:crypto');
+const templates = require('./_email/templates');
 
 const MAX_BODY_BYTES = 16 * 1024;
 const MIN_FILL_MS = 2500;
@@ -144,12 +146,10 @@ function base64Lines(text) {
   return Buffer.from(text, 'utf8').toString('base64').replace(/.{1,76}/g, '$&\r\n');
 }
 
-function escapeHtml(s) {
-  return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-}
-
-function buildMessage({ from, fromName, to, replyTo, subject, text, html, domain }) {
-  const boundary = 'fl-' + crypto.randomBytes(12).toString('hex');
+// Builds a MIME message: text/plain alternative plus an HTML part with inline (CID) images.
+function buildMessage({ from, fromName, to, replyTo, subject, text, html, inline = [], domain }) {
+  const alt = 'fl-alt-' + crypto.randomBytes(10).toString('hex');
+  const rel = 'fl-rel-' + crypto.randomBytes(10).toString('hex');
   const headers = [
     `From: ${mailbox(from, fromName)}`,
     `To: ${mailbox(to)}`,
@@ -158,84 +158,42 @@ function buildMessage({ from, fromName, to, replyTo, subject, text, html, domain
     `Date: ${new Date().toUTCString()}`,
     `Message-ID: <${crypto.randomUUID()}@${domain}>`,
     'MIME-Version: 1.0',
-    `Content-Type: multipart/alternative; boundary="${boundary}"`,
+    `Content-Type: multipart/alternative; boundary="${alt}"`,
   ].filter(Boolean);
+  const htmlPart = inline.length
+    ? [
+        `Content-Type: multipart/related; boundary="${rel}"`,
+        '',
+        `--${rel}`,
+        'Content-Type: text/html; charset=UTF-8',
+        'Content-Transfer-Encoding: base64',
+        '',
+        base64Lines(html),
+        ...inline.flatMap((img) => [
+          `--${rel}`,
+          `Content-Type: ${img.contentType}; name="${img.filename}"`,
+          'Content-Transfer-Encoding: base64',
+          `Content-ID: <${img.cid}>`,
+          `Content-Disposition: inline; filename="${img.filename}"`,
+          '',
+          img.base64.replace(/.{1,76}/g, '$&\r\n'),
+        ]),
+        `--${rel}--`,
+      ]
+    : ['Content-Type: text/html; charset=UTF-8', 'Content-Transfer-Encoding: base64', '', base64Lines(html)];
   return [
     ...headers,
     '',
-    `--${boundary}`,
+    `--${alt}`,
     'Content-Type: text/plain; charset=UTF-8',
     'Content-Transfer-Encoding: base64',
     '',
     base64Lines(text),
-    `--${boundary}`,
-    'Content-Type: text/html; charset=UTF-8',
-    'Content-Transfer-Encoding: base64',
-    '',
-    base64Lines(html),
-    `--${boundary}--`,
+    `--${alt}`,
+    ...htmlPart,
+    `--${alt}--`,
     '',
   ].join('\r\n');
-}
-
-function enquiryEmail(v, cfg) {
-  const sent = new Date().toISOString().replace('T', ' ').slice(0, 16) + ' UTC';
-  const text = [
-    'New message from the flakelab.ca contact form.',
-    '',
-    `Name:  ${v.name}`,
-    `Email: ${v.email}`,
-    `Phone: ${v.phone}`,
-    '',
-    'Message:',
-    v.message,
-    '',
-    `Sent: ${sent}`,
-    'Reply to this email to answer them directly.',
-  ].join('\n');
-  const row = (k, val) => `<tr><td style="padding:4px 14px 4px 0;color:#6b6656;vertical-align:top">${k}</td><td style="padding:4px 0">${val}</td></tr>`;
-  const html = `<div style="font-family:Arial,Helvetica,sans-serif;font-size:15px;line-height:1.5;color:#14140F">
-<p style="margin:0 0 12px"><strong>New message from the flakelab.ca contact form.</strong></p>
-<table style="border-collapse:collapse">${row('Name', escapeHtml(v.name))}${row('Email', `<a href="mailto:${escapeHtml(v.email)}">${escapeHtml(v.email)}</a>`)}${row('Phone', `<a href="tel:${escapeHtml(v.phone.replace(/[^0-9+]/g, ''))}">${escapeHtml(v.phone)}</a>`)}</table>
-<p style="margin:16px 0 4px;color:#6b6656">Message</p>
-<p style="margin:0;white-space:pre-wrap">${escapeHtml(v.message)}</p>
-<p style="margin:16px 0 0;color:#6b6656;font-size:13px">Sent ${sent}. Reply to this email to answer them directly.</p>
-</div>`;
-  return buildMessage({
-    from: cfg.from, fromName: 'Flake Lab website', to: cfg.to, replyTo: v.email,
-    subject: `Website enquiry from ${v.name}`, text, html, domain: cfg.domain,
-  });
-}
-
-// The confirmation never repeats the visitor's message, so the form can't be used to mail arbitrary text to strangers.
-function confirmationEmail(v, cfg) {
-  const first = v.name.split(' ')[0];
-  const greetName = /^[\p{L}][\p{L}'.-]{0,29}$/u.test(first) ? first : '';
-  const hi = greetName ? `Hi ${greetName},` : 'Hi there,';
-  const text = [
-    hi,
-    '',
-    "Thanks for getting in touch with Flake Lab. We've got your message and will get back to you soon.",
-    '',
-    "In the meantime, this week's lineup is at https://store.flakelab.ca and bake-day photos are on Instagram at @flakelab.ca.",
-    '',
-    `This is an automated message from a no-reply address, so replies aren't read. To add anything, email ${cfg.to}.`,
-    '',
-    'Flake Lab',
-    'By Diwan Bakery',
-  ].join('\n');
-  const html = `<div style="font-family:Arial,Helvetica,sans-serif;font-size:15px;line-height:1.6;color:#14140F;max-width:520px">
-<p style="margin:0 0 14px">${escapeHtml(hi)}</p>
-<p style="margin:0 0 14px">Thanks for getting in touch with Flake Lab. We've got your message and will get back to you soon.</p>
-<p style="margin:0 0 14px">In the meantime, this week's lineup is at <a href="https://store.flakelab.ca" style="color:#2A3BD0">store.flakelab.ca</a> and bake-day photos are on Instagram at <a href="https://www.instagram.com/flakelab.ca" style="color:#2A3BD0">@flakelab.ca</a>.</p>
-<p style="margin:0 0 20px;color:#6b6656;font-size:13px">This is an automated message from a no-reply address, so replies aren't read. To add anything, email <a href="mailto:${escapeHtml(cfg.to)}" style="color:#2A3BD0">${escapeHtml(cfg.to)}</a>.</p>
-<p style="margin:0;font-weight:bold">Flake Lab</p>
-<p style="margin:0;color:#6b6656">By Diwan Bakery</p>
-</div>`;
-  return buildMessage({
-    from: cfg.from, fromName: 'Flake Lab', to: v.email,
-    subject: 'Thanks for reaching out to Flake Lab', text, html, domain: cfg.domain,
-  });
 }
 
 // ---------- minimal SMTP client (implicit TLS) ----------
@@ -366,8 +324,8 @@ module.exports = async function handler(req, res) {
   const v = checked.value;
   try {
     const [, confirmation] = await sendAll(cfg, [
-      { to: cfg.to, data: enquiryEmail(v, cfg), required: true },
-      { to: v.email, data: confirmationEmail(v, cfg), required: false },
+      { to: cfg.to, data: buildMessage({ ...templates.enquiry(v, cfg), from: cfg.from, fromName: 'Flake Lab website', to: cfg.to, replyTo: v.email, domain: cfg.domain }), required: true },
+      { to: v.email, data: buildMessage({ ...templates.confirmation(v, cfg), from: cfg.from, fromName: 'Flake Lab', to: v.email, domain: cfg.domain }), required: false },
     ]);
     if (confirmation && !confirmation.ok) console.error('[contact] confirmation email failed:', describe(confirmation.error));
     return reply(res, 200, { ok: true });

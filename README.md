@@ -33,6 +33,7 @@ If something looks broken, report it — do not redesign it.
 | --- | --- |
 | `index.html` | The whole site. Self-contained, ~1.8 MB, no build step. |
 | `api/contact.js` | Vercel function behind the Contact us form. Node built-ins only, no packages. |
+| `api/_email/` | Branded email templates and the embedded wordmark image. The underscore keeps Vercel from treating it as an endpoint. |
 | `vercel.json` | Static config: clean URLs, cache headers for images/fonts. |
 | `robots.txt` | Allows all crawlers, points at the sitemap. |
 | `sitemap.xml` | Single URL (`https://flakelab.ca/`). Update the domain if it changes. |
@@ -106,7 +107,7 @@ HTTPS is issued automatically once DNS resolves (usually minutes).
 
 | What | Where it points |
 | --- | --- |
-| Order / store CTAs (4 links) | `https://store.flakelab.ca` |
+| Order / store CTAs (4 links) | `https://store.flakelab.ca`, opened in the same tab. The store blocks embedding (`X-Frame-Options: DENY`), so it can't open inside the site. |
 | Instagram (nav-less; panel + footer) | `https://www.instagram.com/flakelab.ca?utm_source=ig_web_button_share_sheet&stkn=ZDNlZDc0MzIxNw==` |
 | Email / wholesale | `mailto:info@flakelab.ca` (Contact card and footer) |
 | Contact us form | Posts to `/api/contact`, which emails `info@flakelab.ca` and sends the visitor a confirmation from `no-reply@flakelab.ca` |
